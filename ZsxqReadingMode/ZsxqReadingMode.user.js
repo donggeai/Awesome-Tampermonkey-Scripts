@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         知识星球阅读模式增强器
 // @namespace    https://github.com/donggeai/Awesome-Tampermonkey-Scripts
-// @version      1.0.0
-// @description  为知识星球提供纯净的阅读模式，隐藏侧边栏和导航栏，自动展开内容，专注阅读体验
+// @version      1.0.2
+// @description  为知识星球提供纯净的阅读模式，隐藏侧边栏和导航栏，自动展开内容，保留用户信息显示，专注阅读体验
 // @author       东哥说AI
 // @match        https://wx.zsxq.com/group/*
 // @grant        none
@@ -71,9 +71,47 @@
             display: none !important;
         }
         
-        /* 隐藏头部导航栏 */
-        .zsxq-reading-mode .header-container {
+        /* 隐藏页面顶部导航栏，但保留帖子中的用户信息 */
+        .zsxq-reading-mode .app-header,
+        .zsxq-reading-mode .group-header,
+        .zsxq-reading-mode .top-nav,
+        .zsxq-reading-mode .navigation-bar {
             display: none !important;
+        }
+        
+        /* 确保帖子用户信息正常显示 */
+        .zsxq-reading-mode .topic-container .header-container {
+            display: block !important;
+            padding: 15px 20px 10px 20px !important;
+            border-bottom: 1px solid #f0f0f0 !important;
+        }
+        
+        .zsxq-reading-mode .topic-container .header-container .author {
+            display: flex !important;
+            align-items: center !important;
+        }
+        
+        .zsxq-reading-mode .topic-container .header-container .avatar {
+            width: 40px !important;
+            height: 40px !important;
+            border-radius: 50% !important;
+            margin-right: 12px !important;
+        }
+        
+        .zsxq-reading-mode .topic-container .header-container .info {
+            flex: 1 !important;
+        }
+        
+        .zsxq-reading-mode .topic-container .header-container .role {
+            font-weight: 600 !important;
+            color: #333 !important;
+            font-size: 14px !important;
+            margin-bottom: 4px !important;
+        }
+        
+        .zsxq-reading-mode .topic-container .header-container .date {
+            color: #666 !important;
+            font-size: 12px !important;
         }
         
         .zsxq-reading-mode .topic-flow-container {

@@ -42,6 +42,27 @@
 
 ---
 
+### 🎙️ [钉钉AI听记导出器](DingTalkTranscriptExporter)
+
+**功能简介**: 一键导出钉钉AI听记的转写内容、AI纪要和章节信息
+
+**主要特性**:
+- 📝 完整导出转写内容（支持虚拟滚动自动加载，可处理数小时长录音）
+- 🤖 AI纪要导出保留完整格式（标题、列表、加粗、嵌套、引用、AI洞察）
+- 🖼️ 自动提取AI纪要可视化摘要图片链接
+- 📑 导出AI自动生成的章节摘要和时间戳
+- 🎯 支持 Markdown、HTML、TXT 三种格式导出
+- 📋 一键复制到剪贴板
+- 🔄 灵活选择导出内容（转写、AI纪要、章节任意组合）
+
+**适用场景**: 会议记录整理、面试记录归档、培训课程笔记、通话内容存档
+
+**支持网站**: `https://shanji.dingtalk.com/app/transcribes/*`
+
+**安装**: [点击安装](https://greasyfork.org/zh-CN/scripts/572472-%E9%92%89%E9%92%89ai%E5%90%AC%E8%AE%B0%E5%AF%BC%E5%87%BA%E7%A5%9E%E5%99%A8-dingtalk-ai-transcript-exporter)
+
+---
+
 ## 🚀 快速开始
 
 ### 前置要求
@@ -76,12 +97,6 @@
 <strong>个人微信</strong><br/>
 扫码添加开发者微信<br/>
 与开发者面对面交流
-</td>
-<td align="center">
-<img src="assets/东哥说AI_ai_tools_wechat_group.png" alt="微信交流群：实用工具分享" width="150"/><br/>
-<strong>AI工具微信交流群</strong><br/>
-加入用户交流群<br/>
-分享使用经验和建议
 </td>
 <td align="center">
 <img src="assets/东哥说AI_wechat_official_account.jpg" alt="微信公众号：东哥说AI" width="150"/><br/>

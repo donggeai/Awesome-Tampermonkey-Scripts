@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         腾讯会议转写纪要导出神器 (Tencent Meeting Transcript Exporter)
 // @namespace    https://github.com/awesome-tampermonkey
-// @version      1.0.0
-// @description  一键导出腾讯会议录制视频的转写内容和纪要，支持Markdown、HTML、TXT格式导出和复制
+// @version      1.1.1
+// @description  一键导出腾讯会议录制视频和纯文字转写的内容和纪要，支持Markdown、HTML、TXT格式导出和复制
 // @author       东哥说AI
 // @match        https://meeting.tencent.com/cw/*
+// @match        https://meeting.tencent.com/ct/*
 // @grant        none
 // @license      MIT
-// @downloadURL  https://github.com/awesome-tampermonkey/tencent-meeting-transcript-exporter/raw/main/TencentMeetingTranscriptExporter.user.js
-// @updateURL    https://github.com/awesome-tampermonkey/tencent-meeting-transcript-exporter/raw/main/TencentMeetingTranscriptExporter.user.js
+// @downloadURL  https://github.com/donggeai/Awesome-Tampermonkey-Scripts/blob/master/TencentMeetingTranscriptExporter/TencentMeetingTranscriptExporter.user.js
+// @updateURL    https://github.com/donggeai/Awesome-Tampermonkey-Scripts/blob/master/TencentMeetingTranscriptExporter/TencentMeetingTranscriptExporter.user.js
 // ==/UserScript==
 
 (function() {
@@ -58,9 +59,17 @@
 
     // 工具函数
     const utils = {
+        // 检测页面类型
+        getPageType() {
+            const url = window.location.href;
+            if (url.includes('/cw/')) return 'recording'; // 录制视频页面
+            if (url.includes('/ct/')) return 'transcript'; // 纯文字转写页面
+            return 'unknown';
+        },
+
         // 获取会议标题
         getMeetingTitle() {
-            const titleElement = document.querySelector('.meeting-main-subject .subject') || 
+            const titleElement = document.querySelector('.meeting-main-subject .subject') ||
                                document.querySelector('.meeting-subject') ||
                                document.querySelector('.meeting-title');
             return titleElement ? titleElement.textContent.trim() : '腾讯会议转写';
@@ -92,9 +101,17 @@
 
         // 获取当前激活的Tab类型
         getCurrentTabType() {
+            const pageType = this.getPageType();
+
+            // 纯文字转写页面没有Tab，转写和纪要同时显示
+            if (pageType === 'transcript') {
+                return 'both'; // 表示同时包含转写和纪要
+            }
+
+            // 录制视频页面有Tab切换
             const activeTab = document.querySelector('.met-tabs__tabitem.is-active .tab');
             if (!activeTab) return 'transcript';
-            
+
             const tabText = activeTab.textContent.trim();
             if (tabText.includes('转写')) return 'transcript';
             if (tabText.includes('纪要')) return 'summary';
@@ -103,6 +120,14 @@
 
         // 获取转写内容（支持虚拟滚动）
         async getTranscriptContent() {
+            const pageType = this.getPageType();
+
+            // 纯文字转写页面使用不同的方法
+            if (pageType === 'transcript') {
+                return this.getTranscriptContentForTextPage();
+            }
+
+            // 录制视频页面的原有逻辑
             // 查找虚拟滚动容器
             const scrollContainer = document.querySelector('.auto-meeting-minutes .minutes-module-list');
             if (!scrollContainer) {
@@ -192,7 +217,106 @@
             
             return content;
         },
-        
+
+        // 获取纯文字转写页面的转写内容（支持虚拟滚动）
+        async getTranscriptContentForTextPage() {
+            // 查找虚拟滚动容器
+            const scrollContainer = document.querySelector('.minutes-module-paragraphs .minutes-module-list');
+
+            // 如果没有滚动容器或内容不需要滚动，直接获取可见内容
+            if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
+                return this.getTranscriptContentForTextPageFallback();
+            }
+
+            const originalScrollTop = scrollContainer.scrollTop;
+            let lastScrollTop = -1;
+            let allContent = new Map();
+
+            try {
+                scrollContainer.scrollTop = 0;
+                await this.sleep(200);
+
+                while (scrollContainer.scrollTop !== lastScrollTop) {
+                    lastScrollTop = scrollContainer.scrollTop;
+
+                    const currentRows = scrollContainer.querySelectorAll('.minutes-module-row');
+                    currentRows.forEach(row => {
+                        const pidAttr = row.getAttribute('data-pid') || row.querySelector('[data-pid]')?.getAttribute('data-pid');
+                        const speakerElement = row.querySelector('.paragraph-module_speaker-name__afSbd');
+                        const nameTimeElement = row.querySelector('.minutes-module-name-time');
+                        const textElement = row.querySelector('.paragraph-module_sentences__zK2oL, .minutes-module-sentences');
+
+                        if (textElement && textElement.textContent.trim()) {
+                            const speaker = speakerElement ? speakerElement.textContent.trim() : '未知发言人';
+                            let time = '';
+                            if (nameTimeElement) {
+                                const timeMatch = nameTimeElement.textContent.match(/\d{2}:\d{2}/);
+                                time = timeMatch ? timeMatch[0] : '';
+                            }
+                            const text = textElement.textContent.trim();
+
+                            const uniqueKey = pidAttr || `${time}_${speaker}_${text.substring(0, 20)}`;
+
+                            if (!allContent.has(uniqueKey)) {
+                                allContent.set(uniqueKey, {
+                                    pid: pidAttr ? parseInt(pidAttr) : null,
+                                    time,
+                                    speaker,
+                                    text
+                                });
+                            }
+                        }
+                    });
+
+                    scrollContainer.scrollTop += scrollContainer.clientHeight;
+                    await this.sleep(100);
+                }
+
+                scrollContainer.scrollTop = originalScrollTop;
+
+                const contentArray = Array.from(allContent.values());
+                return contentArray.sort((a, b) => {
+                    if (a.pid !== null && b.pid !== null) return a.pid - b.pid;
+                    return a.time.localeCompare(b.time);
+                });
+
+            } catch (error) {
+                console.error('获取转写内容时出错:', error);
+                scrollContainer.scrollTop = originalScrollTop;
+                return this.getTranscriptContentForTextPageFallback();
+            }
+        },
+
+        // 降级方法：获取当前可见的转写内容
+        getTranscriptContentForTextPageFallback() {
+            const transcriptRows = document.querySelectorAll('.minutes-module-row');
+            let content = [];
+
+            transcriptRows.forEach(row => {
+                const speakerElement = row.querySelector('.paragraph-module_speaker-name__afSbd');
+                const nameTimeElement = row.querySelector('.minutes-module-name-time');
+                const textElement = row.querySelector('.paragraph-module_sentences__zK2oL, .minutes-module-sentences');
+
+                if (textElement && textElement.textContent.trim()) {
+                    const speaker = speakerElement ? speakerElement.textContent.trim() : '未知发言人';
+                    let time = '';
+                    if (nameTimeElement) {
+                        const timeMatch = nameTimeElement.textContent.match(/\d{2}:\d{2}/);
+                        time = timeMatch ? timeMatch[0] : '';
+                    }
+                    const text = textElement.textContent.trim();
+
+                    content.push({
+                        time,
+                        speaker,
+                        text
+                    });
+                }
+            });
+
+            return content;
+        },
+
         // 延时函数
         sleep(ms) {
             return new Promise(resolve => setTimeout(resolve, ms));
@@ -200,12 +324,37 @@
 
         // 获取纪要内容
         getSummaryContent() {
+            const pageType = this.getPageType();
+
+            // 纯文字转写页面使用不同的选择器
+            if (pageType === 'transcript') {
+                const summaryContainer = document.querySelector('.aisummary-container .summary-content-wrap');
+                if (!summaryContainer) return null;
+
+                const summaryElements = summaryContainer.querySelectorAll('h4, p, li');
+                let content = [];
+
+                summaryElements.forEach(element => {
+                    const text = element.textContent.trim();
+                    if (text && text.length > 0) {
+                        const tagName = element.tagName.toLowerCase();
+                        content.push({
+                            type: tagName,
+                            text: text
+                        });
+                    }
+                });
+
+                return content;
+            }
+
+            // 录制视频页面的原有逻辑
             const summaryContainer = document.querySelector('.summary-content-wrap');
             if (!summaryContainer) return null;
-            
+
             const summaryElements = summaryContainer.querySelectorAll('h4, p, li, div[contenteditable="true"]');
             let content = [];
-            
+
             summaryElements.forEach(element => {
                 const text = element.textContent.trim();
                 if (text && text.length > 0) {
@@ -216,7 +365,7 @@
                     });
                 }
             });
-            
+
             return content;
         },
 
@@ -472,28 +621,61 @@
         showExportModal() {
             const modal = document.createElement('div');
             modal.style.cssText = CONFIG.MODAL_STYLE;
-            
+
             const modalContent = document.createElement('div');
             modalContent.style.cssText = CONFIG.MODAL_CONTENT_STYLE;
-            
+
             const currentTab = utils.getCurrentTabType();
-            const tabName = currentTab === 'transcript' ? '转写内容' : '会议纪要';
-            
-            modalContent.innerHTML = `
-                <h2 style="margin: 0 0 20px 0; color: #2c3e50; font-size: 24px;">导出${tabName}</h2>
-                <p style="margin: 0 0 25px 0; color: #7f8c8d; line-height: 1.5;">选择导出格式，文件名将自动使用会议标题</p>
-                
-                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-bottom: 25px;">
-                    <button id="export-md" style="padding: 15px; border: 2px solid #3498db; background: white; color: #3498db; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📄 Markdown</button>
-                    <button id="export-html" style="padding: 15px; border: 2px solid #e74c3c; background: white; color: #e74c3c; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🌐 HTML</button>
-                    <button id="export-txt" style="padding: 15px; border: 2px solid #f39c12; background: white; color: #f39c12; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📝 TXT</button>
-                    <button id="copy-md" style="padding: 15px; border: 2px solid #9b59b6; background: white; color: #9b59b6; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📋 复制Markdown</button>
-                </div>
-                
-                <div style="display: flex; justify-content: flex-end; gap: 10px;">
-                    <button id="modal-close" style="padding: 10px 20px; border: 1px solid #bdc3c7; background: white; color: #7f8c8d; border-radius: 6px; cursor: pointer;">取消</button>
-                </div>
-            `;
+            let tabName, modalHTML;
+
+            // 纯文字转写页面同时包含转写和纪要
+            if (currentTab === 'both') {
+                modalHTML = `
+                    <h2 style="margin: 0 0 20px 0; color: #2c3e50; font-size: 24px;">导出转写/纪要</h2>
+                    <p style="margin: 0 0 25px 0; color: #7f8c8d; line-height: 1.5;">选择要导出的内容类型和格式</p>
+
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-bottom: 25px;">
+                        <button id="export-transcript-md" style="padding: 15px; border: 2px solid #3498db; background: white; color: #3498db; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📄 导出转写(MD)</button>
+                        <button id="export-summary-md" style="padding: 15px; border: 2px solid #e74c3c; background: white; color: #e74c3c; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📋 导出纪要(MD)</button>
+                        <button id="export-transcript-html" style="padding: 15px; border: 2px solid #f39c12; background: white; color: #f39c12; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🌐 导出转写(HTML)</button>
+                        <button id="export-summary-html" style="padding: 15px; border: 2px solid #9b59b6; background: white; color: #9b59b6; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🌐 导出纪要(HTML)</button>
+                        <button id="export-transcript-txt" style="padding: 15px; border: 2px solid #16a085; background: white; color: #16a085; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📝 导出转写(TXT)</button>
+                        <button id="copy-transcript-md" style="padding: 15px; border: 2px solid #8e44ad; background: white; color: #8e44ad; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📋 复制转写(MD)</button>
+                    </div>
+
+                    <div style="text-align: center; padding: 8px 0; margin-bottom: 10px; color: #999; font-size: 12px;">
+                        💬 添加东哥微信 <span style="color: #3498db; font-weight: 600;">donggeai02</span> 获取更多实用脚本
+                    </div>
+
+                    <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                        <button id="modal-close" style="padding: 10px 20px; border: 1px solid #bdc3c7; background: white; color: #7f8c8d; border-radius: 6px; cursor: pointer;">取消</button>
+                    </div>
+                `;
+            } else {
+                // 录制视频页面的原有逻辑
+                tabName = currentTab === 'transcript' ? '转写内容' : '会议纪要';
+                modalHTML = `
+                    <h2 style="margin: 0 0 20px 0; color: #2c3e50; font-size: 24px;">导出${tabName}</h2>
+                    <p style="margin: 0 0 25px 0; color: #7f8c8d; line-height: 1.5;">选择导出格式，文件名将自动使用会议标题</p>
+
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-bottom: 25px;">
+                        <button id="export-md" style="padding: 15px; border: 2px solid #3498db; background: white; color: #3498db; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📄 Markdown</button>
+                        <button id="export-html" style="padding: 15px; border: 2px solid #e74c3c; background: white; color: #e74c3c; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">🌐 HTML</button>
+                        <button id="export-txt" style="padding: 15px; border: 2px solid #f39c12; background: white; color: #f39c12; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📝 TXT</button>
+                        <button id="copy-md" style="padding: 15px; border: 2px solid #9b59b6; background: white; color: #9b59b6; border-radius: 8px; cursor: pointer; font-weight: 600; transition: all 0.3s ease;">📋 复制Markdown</button>
+                    </div>
+
+                    <div style="text-align: center; padding: 8px 0; margin-bottom: 10px; color: #999; font-size: 12px;">
+                        💬 添加东哥微信 <span style="color: #3498db; font-weight: 600;">donggeai02</span> 获取更多实用脚本
+                    </div>
+
+                    <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                        <button id="modal-close" style="padding: 10px 20px; border: 1px solid #bdc3c7; background: white; color: #7f8c8d; border-radius: 6px; cursor: pointer;">取消</button>
+                    </div>
+                `;
+            }
+
+            modalContent.innerHTML = modalHTML;
             
             // 添加按钮悬停效果
             const buttons = modalContent.querySelectorAll('button[id^="export-"], button[id^="copy-"]');
@@ -509,12 +691,23 @@
                     btn.style.color = borderColor;
                 });
             });
-            
+
             // 绑定事件
-            modalContent.querySelector('#export-md').addEventListener('click', () => this.exportContent('md'));
-            modalContent.querySelector('#export-html').addEventListener('click', () => this.exportContent('html'));
-            modalContent.querySelector('#export-txt').addEventListener('click', () => this.exportContent('txt'));
-            modalContent.querySelector('#copy-md').addEventListener('click', () => this.copyContent());
+            if (currentTab === 'both') {
+                // 纯文字转写页面的事件绑定
+                modalContent.querySelector('#export-transcript-md')?.addEventListener('click', () => this.exportContent('md', 'transcript'));
+                modalContent.querySelector('#export-summary-md')?.addEventListener('click', () => this.exportContent('md', 'summary'));
+                modalContent.querySelector('#export-transcript-html')?.addEventListener('click', () => this.exportContent('html', 'transcript'));
+                modalContent.querySelector('#export-summary-html')?.addEventListener('click', () => this.exportContent('html', 'summary'));
+                modalContent.querySelector('#export-transcript-txt')?.addEventListener('click', () => this.exportContent('txt', 'transcript'));
+                modalContent.querySelector('#copy-transcript-md')?.addEventListener('click', () => this.copyContent('transcript'));
+            } else {
+                // 录制视频页面的原有事件绑定
+                modalContent.querySelector('#export-md')?.addEventListener('click', () => this.exportContent('md'));
+                modalContent.querySelector('#export-html')?.addEventListener('click', () => this.exportContent('html'));
+                modalContent.querySelector('#export-txt')?.addEventListener('click', () => this.exportContent('txt'));
+                modalContent.querySelector('#copy-md')?.addEventListener('click', () => this.copyContent());
+            }
             modalContent.querySelector('#modal-close').addEventListener('click', () => this.closeModal(modal));
             
             modal.addEventListener('click', (e) => {
@@ -527,12 +720,14 @@
             document.body.appendChild(modal);
         }
 
-        async exportContent(format) {
+        async exportContent(format, contentType = null) {
             try {
                 const currentTab = utils.getCurrentTabType();
+                // 如果显式指定了内容类型，使用指定的类型；否则使用当前Tab类型
+                const exportType = contentType || (currentTab === 'both' ? 'transcript' : currentTab);
                 let data, content, filename;
-                
-                if (currentTab === 'transcript') {
+
+                if (exportType === 'transcript') {
                     // 显示加载提示
                     utils.showMessage('正在获取转写内容，请稍候...', 'info');
                     
@@ -571,18 +766,18 @@
                         now.getSeconds().toString().padStart(2, '0');
                 }
                 
-                const tabName = currentTab === 'transcript' ? '转写' : '纪要';
+                const tabName = exportType === 'transcript' ? '转写' : '纪要';
                 filename = `${title}_${tabName}_${timestamp}.${format}`;
-                
+
                 switch (format) {
                     case 'md':
-                        content = utils.formatAsMarkdown(data, currentTab);
+                        content = utils.formatAsMarkdown(data, exportType);
                         break;
                     case 'html':
-                        content = utils.formatAsHTML(data, currentTab);
+                        content = utils.formatAsHTML(data, exportType);
                         break;
                     case 'txt':
-                        content = utils.formatAsTXT(data, currentTab);
+                        content = utils.formatAsTXT(data, exportType);
                         break;
                 }
                 
@@ -599,21 +794,23 @@
             }
         }
 
-        async copyContent() {
+        async copyContent(contentType = null) {
             try {
                 const currentTab = utils.getCurrentTabType();
+                // 如果显式指定了内容类型，使用指定的类型；否则使用当前Tab类型
+                const exportType = contentType || (currentTab === 'both' ? 'transcript' : currentTab);
                 let data;
-                
-                if (currentTab === 'transcript') {
+
+                if (exportType === 'transcript') {
                     // 显示加载提示
                     utils.showMessage('正在获取转写内容，请稍候...', 'info');
-                    
+
                     data = await utils.getTranscriptContent();
                     if (!data || data.length === 0) {
                         utils.showMessage('未找到转写内容，请确保页面已加载完成', 'error');
                         return;
                     }
-                    
+
                     // 显示成功提示
                     utils.showMessage(`获取成功！共找到 ${data.length} 条转写记录`, 'success');
                 } else {
@@ -623,16 +820,16 @@
                         return;
                     }
                 }
-                
-                const content = utils.formatAsMarkdown(data, currentTab);
+
+                const content = utils.formatAsMarkdown(data, exportType);
                 const success = await utils.copyToClipboard(content);
-                
+
                 if (success) {
                     utils.showMessage('Markdown内容已复制到剪贴板！');
                 } else {
                     utils.showMessage('复制失败，请重试', 'error');
                 }
-                
+
                 // 关闭模态框
                 const modal = document.querySelector('div[style*="position: fixed"][style*="z-index: 10001"]');
                 if (modal) this.closeModal(modal);
