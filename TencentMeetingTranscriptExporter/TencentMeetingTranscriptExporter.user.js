@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         腾讯会议转写纪要导出神器 (Tencent Meeting Transcript Exporter)
 // @namespace    https://github.com/awesome-tampermonkey
-// @version      1.1.1
+// @version      1.1.2
 // @description  一键导出腾讯会议录制视频和纯文字转写的内容和纪要，支持Markdown、HTML、TXT格式导出和复制
 // @author       东哥说AI
 // @match        https://meeting.tencent.com/cw/*
@@ -57,6 +57,8 @@
         `
     };
 
+    let pendingTranscriptRead;
+
     // 工具函数
     const utils = {
         // 检测页面类型
@@ -70,6 +72,7 @@
         // 获取会议标题
         getMeetingTitle() {
             const titleElement = document.querySelector('.meeting-main-subject .subject') ||
+                               document.querySelector('[class*="style_meeting-main-subject__"] [class*="style_subject__"]') ||
                                document.querySelector('.meeting-subject') ||
                                document.querySelector('.meeting-title');
             return titleElement ? titleElement.textContent.trim() : '腾讯会议转写';
@@ -120,11 +123,14 @@
 
         // 获取转写内容（支持虚拟滚动）
         async getTranscriptContent() {
-            const pageType = this.getPageType();
+            const transcriptList = document.querySelector('.minutes-module-paragraphs .minutes-module-list');
 
-            // 纯文字转写页面使用不同的方法
-            if (pageType === 'transcript') {
-                return this.getTranscriptContentForTextPage();
+            // 新版录制页面与纯文字转写页面使用相同的转写列表。
+            if (this.getPageType() === 'transcript' || transcriptList?.querySelector('.minutes-module-row')) {
+                pendingTranscriptRead ??= this.getTranscriptContentFromRows(transcriptList).finally(() => {
+                    pendingTranscriptRead = undefined;
+                });
+                return pendingTranscriptRead;
             }
 
             // 录制视频页面的原有逻辑
@@ -218,61 +224,46 @@
             return content;
         },
 
-        // 获取纯文字转写页面的转写内容（支持虚拟滚动）
-        async getTranscriptContentForTextPage() {
-            // 查找虚拟滚动容器
-            const scrollContainer = document.querySelector('.minutes-module-paragraphs .minutes-module-list');
-
+        // 从转写列表采集段落（支持虚拟滚动）
+        async getTranscriptContentFromRows(scrollContainer) {
             // 如果没有滚动容器或内容不需要滚动，直接获取可见内容
             if (!scrollContainer || scrollContainer.scrollHeight <= scrollContainer.clientHeight) {
-                return this.getTranscriptContentForTextPageFallback();
+                return this.getVisibleTranscriptRows(scrollContainer || document);
             }
 
             const originalScrollTop = scrollContainer.scrollTop;
-            let lastScrollTop = -1;
-            let allContent = new Map();
+            const allContent = new Map();
+            let stalledAttempts = 0;
 
             try {
                 scrollContainer.scrollTop = 0;
                 await this.sleep(200);
 
-                while (scrollContainer.scrollTop !== lastScrollTop) {
-                    lastScrollTop = scrollContainer.scrollTop;
-
+                while (true) {
                     const currentRows = scrollContainer.querySelectorAll('.minutes-module-row');
                     currentRows.forEach(row => {
-                        const pidAttr = row.getAttribute('data-pid') || row.querySelector('[data-pid]')?.getAttribute('data-pid');
-                        const speakerElement = row.querySelector('.paragraph-module_speaker-name__afSbd');
-                        const nameTimeElement = row.querySelector('.minutes-module-name-time');
-                        const textElement = row.querySelector('.paragraph-module_sentences__zK2oL, .minutes-module-sentences');
-
-                        if (textElement && textElement.textContent.trim()) {
-                            const speaker = speakerElement ? speakerElement.textContent.trim() : '未知发言人';
-                            let time = '';
-                            if (nameTimeElement) {
-                                const timeMatch = nameTimeElement.textContent.match(/\d{2}:\d{2}/);
-                                time = timeMatch ? timeMatch[0] : '';
-                            }
-                            const text = textElement.textContent.trim();
-
-                            const uniqueKey = pidAttr || `${time}_${speaker}_${text.substring(0, 20)}`;
-
-                            if (!allContent.has(uniqueKey)) {
-                                allContent.set(uniqueKey, {
-                                    pid: pidAttr ? parseInt(pidAttr) : null,
-                                    time,
-                                    speaker,
-                                    text
-                                });
-                            }
+                        const entry = this.readTranscriptRow(row);
+                        if (!entry) return;
+                        const { pid, time, speaker, text } = entry;
+                        const key = pid ?? JSON.stringify([time, speaker, text]);
+                        if (!allContent.has(key)) {
+                            allContent.set(key, entry);
                         }
                     });
 
-                    scrollContainer.scrollTop += scrollContainer.clientHeight;
-                    await this.sleep(100);
-                }
+                    const { scrollTop, clientHeight, scrollHeight } = scrollContainer;
+                    if (scrollTop + clientHeight >= scrollHeight - 1) break;
 
-                scrollContainer.scrollTop = originalScrollTop;
+                    scrollContainer.scrollTop = scrollTop + clientHeight;
+                    await this.sleep(100);
+
+                    // 切到逐字稿时，播放器可能短暂把列表拉回当前播放位置。
+                    if (scrollContainer.scrollTop > scrollTop) {
+                        stalledAttempts = 0;
+                    } else if (++stalledAttempts >= 15) {
+                        throw new Error('转写列表无法继续滚动');
+                    }
+                }
 
                 const contentArray = Array.from(allContent.values());
                 return contentArray.sort((a, b) => {
@@ -280,41 +271,26 @@
                     return a.time.localeCompare(b.time);
                 });
 
-            } catch (error) {
-                console.error('获取转写内容时出错:', error);
+            } finally {
                 scrollContainer.scrollTop = originalScrollTop;
-                return this.getTranscriptContentForTextPageFallback();
             }
         },
 
-        // 降级方法：获取当前可见的转写内容
-        getTranscriptContentForTextPageFallback() {
-            const transcriptRows = document.querySelectorAll('.minutes-module-row');
-            let content = [];
+        readTranscriptRow(row) {
+            const text = row.querySelector('.minutes-module-sentences, .paragraph-module_sentences__zK2oL')?.textContent.trim();
+            if (!text) return null;
 
-            transcriptRows.forEach(row => {
-                const speakerElement = row.querySelector('.paragraph-module_speaker-name__afSbd');
-                const nameTimeElement = row.querySelector('.minutes-module-name-time');
-                const textElement = row.querySelector('.paragraph-module_sentences__zK2oL, .minutes-module-sentences');
+            const paragraph = row.querySelector('.minutes-module-paragraph[data-pid]') || row.querySelector('[data-pid]');
+            const pidAttr = row.getAttribute('data-pid') || paragraph?.getAttribute('data-pid');
+            const pid = parseInt(pidAttr, 10);
+            const speaker = row.querySelector('[class*="paragraph-module_speaker-name__"]')?.textContent.trim() || '未知发言人';
+            const time = row.querySelector('.minutes-module-p-start-time')?.textContent.trim() ||
+                         row.querySelector('.minutes-module-name-time')?.textContent.match(/\d+:\d{2}(?::\d{2})?/)?.[0] || '';
+            return { pid: Number.isNaN(pid) ? null : pid, time, speaker, text };
+        },
 
-                if (textElement && textElement.textContent.trim()) {
-                    const speaker = speakerElement ? speakerElement.textContent.trim() : '未知发言人';
-                    let time = '';
-                    if (nameTimeElement) {
-                        const timeMatch = nameTimeElement.textContent.match(/\d{2}:\d{2}/);
-                        time = timeMatch ? timeMatch[0] : '';
-                    }
-                    const text = textElement.textContent.trim();
-
-                    content.push({
-                        time,
-                        speaker,
-                        text
-                    });
-                }
-            });
-
-            return content;
+        getVisibleTranscriptRows(root) {
+            return Array.from(root.querySelectorAll('.minutes-module-row'), row => this.readTranscriptRow(row)).filter(Boolean);
         },
 
         // 延时函数
